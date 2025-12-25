@@ -32,27 +32,8 @@ final class Environment
      */
     public static function validateKey(string $key): bool
     {
-        if ($key === '') {
-            return false;
-        }
-
-        // First character must be letter or underscore
-        $c = $key[0];
-        if (!(($c >= 'A' && $c <= 'Z') || ($c >= 'a' && $c <= 'z') || $c === '_')) {
-            return false;
-        }
-
-        // Remaining characters can include digits
-        $len = strlen($key);
-        for ($i = 1; $i < $len; $i++) {
-            $c = $key[$i];
-            if (!(($c >= 'A' && $c <= 'Z') || ($c >= 'a' && $c <= 'z') ||
-                  ($c >= '0' && $c <= '9') || $c === '_')) {
-                return false;
-            }
-        }
-
-        return true;
+        // preg_match is faster than character loop for validation
+        return $key !== '' && preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $key) === 1;
     }
 
     /**

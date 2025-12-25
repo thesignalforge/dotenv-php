@@ -149,14 +149,10 @@ final class Dotenv
     private static function postProcessValues(array $values, bool $parseArrays): array
     {
         // Build environment for expansion (existing + parsed)
-        $env = Environment::getAll();
+        // Use array union to avoid loop overhead
+        $env = $values + Environment::getAll();
 
-        // Add parsed values to env for self-referential expansion
-        foreach ($values as $key => $value) {
-            $env[$key] = $value;
-        }
-
-        // Expand variables and parse JSON
+        // Expand variables and parse JSON in single pass
         $result = [];
 
         foreach ($values as $key => $value) {
@@ -166,12 +162,15 @@ final class Dotenv
             // Update env for subsequent expansions
             $env[$key] = $expanded;
 
-            // Try JSON parsing if enabled
-            if ($parseArrays && self::looksLikeJson($expanded)) {
-                $jsonValue = self::tryParseJson($expanded);
-                if ($jsonValue !== null) {
-                    $result[$key] = $jsonValue;
-                    continue;
+            // Try JSON parsing if enabled and value looks like JSON
+            if ($parseArrays) {
+                $first = $expanded[0] ?? '';
+                if ($first === '[' || $first === '{') {
+                    $jsonValue = json_decode($expanded, true);
+                    if (json_last_error() === JSON_ERROR_NONE && is_array($jsonValue)) {
+                        $result[$key] = $jsonValue;
+                        continue;
+                    }
                 }
             }
 
@@ -179,34 +178,5 @@ final class Dotenv
         }
 
         return $result;
-    }
-
-    /**
-     * Quick heuristic to check if a string looks like JSON.
-     */
-    private static function looksLikeJson(string $value): bool
-    {
-        $trimmed = ltrim($value);
-        if ($trimmed === '') {
-            return false;
-        }
-
-        return $trimmed[0] === '[' || $trimmed[0] === '{';
-    }
-
-    /**
-     * Try to parse a value as JSON array or object.
-     *
-     * @return array<mixed>|null Parsed array or null if not valid JSON
-     */
-    private static function tryParseJson(string $value): ?array
-    {
-        $result = json_decode($value, true);
-
-        if (json_last_error() === JSON_ERROR_NONE && is_array($result)) {
-            return $result;
-        }
-
-        return null;
     }
 }

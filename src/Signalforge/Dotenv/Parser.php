@@ -31,17 +31,51 @@ final class Parser
     private const STATE_COMMENT = 9;
     private const STATE_LINE_END = 10;
 
+    /** Lookup table for key start characters (A-Z, a-z, _) */
+    private const KEY_START_CHARS = [
+        '_' => true,
+        'A' => true, 'B' => true, 'C' => true, 'D' => true, 'E' => true, 'F' => true,
+        'G' => true, 'H' => true, 'I' => true, 'J' => true, 'K' => true, 'L' => true,
+        'M' => true, 'N' => true, 'O' => true, 'P' => true, 'Q' => true, 'R' => true,
+        'S' => true, 'T' => true, 'U' => true, 'V' => true, 'W' => true, 'X' => true,
+        'Y' => true, 'Z' => true,
+        'a' => true, 'b' => true, 'c' => true, 'd' => true, 'e' => true, 'f' => true,
+        'g' => true, 'h' => true, 'i' => true, 'j' => true, 'k' => true, 'l' => true,
+        'm' => true, 'n' => true, 'o' => true, 'p' => true, 'q' => true, 'r' => true,
+        's' => true, 't' => true, 'u' => true, 'v' => true, 'w' => true, 'x' => true,
+        'y' => true, 'z' => true,
+    ];
+
+    /** Lookup table for key characters (A-Z, a-z, 0-9, _) */
+    private const KEY_CHARS = [
+        '_' => true,
+        '0' => true, '1' => true, '2' => true, '3' => true, '4' => true,
+        '5' => true, '6' => true, '7' => true, '8' => true, '9' => true,
+        'A' => true, 'B' => true, 'C' => true, 'D' => true, 'E' => true, 'F' => true,
+        'G' => true, 'H' => true, 'I' => true, 'J' => true, 'K' => true, 'L' => true,
+        'M' => true, 'N' => true, 'O' => true, 'P' => true, 'Q' => true, 'R' => true,
+        'S' => true, 'T' => true, 'U' => true, 'V' => true, 'W' => true, 'X' => true,
+        'Y' => true, 'Z' => true,
+        'a' => true, 'b' => true, 'c' => true, 'd' => true, 'e' => true, 'f' => true,
+        'g' => true, 'h' => true, 'i' => true, 'j' => true, 'k' => true, 'l' => true,
+        'm' => true, 'n' => true, 'o' => true, 'p' => true, 'q' => true, 'r' => true,
+        's' => true, 't' => true, 'u' => true, 'v' => true, 'w' => true, 'x' => true,
+        'y' => true, 'z' => true,
+    ];
+
     private string $input;
     private int $inputLen;
     private int $pos = 0;
     private int $line = 1;
     private int $column = 1;
 
-    private string $currentKey = '';
-    private string $currentValue = '';
+    /** @var array<int, string> Key buffer as array for faster append */
+    private array $keyBuf = [];
+
+    /** @var array<int, string> Value buffer as array for faster append */
+    private array $valueBuf = [];
 
     private int $state = self::STATE_LINE_START;
-    private string $quoteChar = '';
 
     /** @var array<string, string> */
     private array $result = [];
@@ -60,392 +94,325 @@ final class Parser
      */
     public function parse(): array
     {
-        while ($this->pos < $this->inputLen) {
-            $c = $this->peek();
+        // Cache frequently accessed properties for speed
+        $input = $this->input;
+        $inputLen = $this->inputLen;
+        $pos = 0;
+        $line = 1;
+        $column = 1;
+        $state = self::STATE_LINE_START;
+        $keyBuf = [];
+        $valueBuf = [];
 
-            switch ($this->state) {
+        while ($pos < $inputLen) {
+            $c = $input[$pos];
+
+            switch ($state) {
                 case self::STATE_LINE_START:
-                    $this->handleLineStart($c);
+                    if ($c === ' ' || $c === "\t") {
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '#') {
+                        $state = self::STATE_COMMENT;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === "\n") {
+                        $pos++;
+                        $line++;
+                        $column = 1;
+                    } elseif ($c === "\r") {
+                        $pos++;
+                        $column++;
+                    } elseif (isset(self::KEY_START_CHARS[$c])) {
+                        $state = self::STATE_KEY;
+                        $keyBuf[] = $c;
+                        $pos++;
+                        $column++;
+                    } else {
+                        throw DotenvException::parseError($line, $column, 'Invalid character at start of line');
+                    }
                     break;
 
                 case self::STATE_KEY:
-                    $this->handleKey($c);
+                    if (isset(self::KEY_CHARS[$c])) {
+                        $keyBuf[] = $c;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '=' || $c === ' ' || $c === "\t") {
+                        $state = self::STATE_AFTER_KEY;
+                    } elseif ($c === "\n" || $c === "\r") {
+                        // Key without value
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = '';
+                            $keyBuf = [];
+                        }
+                        $state = self::STATE_LINE_START;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    } else {
+                        throw DotenvException::parseError($line, $column, 'Invalid character in key name');
+                    }
                     break;
 
                 case self::STATE_AFTER_KEY:
-                    $this->handleAfterKey($c);
+                    if ($c === ' ' || $c === "\t") {
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '=') {
+                        $state = self::STATE_BEFORE_VALUE;
+                        $pos++;
+                        $column++;
+                    } else {
+                        throw DotenvException::parseError($line, $column, "Expected '=' after key");
+                    }
                     break;
 
                 case self::STATE_BEFORE_VALUE:
-                    $this->handleBeforeValue($c);
+                    if ($c === ' ' || $c === "\t") {
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '"') {
+                        $state = self::STATE_VALUE_DOUBLE_QUOTED;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === "'") {
+                        $state = self::STATE_VALUE_SINGLE_QUOTED;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '`') {
+                        $state = self::STATE_VALUE_BACKTICK;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === "\n" || $c === "\r") {
+                        // Empty value
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = '';
+                            $keyBuf = [];
+                        }
+                        $state = self::STATE_LINE_START;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    } elseif ($c === '#') {
+                        // Empty value with comment
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = '';
+                            $keyBuf = [];
+                        }
+                        $state = self::STATE_COMMENT;
+                        $pos++;
+                        $column++;
+                    } else {
+                        $state = self::STATE_VALUE_UNQUOTED;
+                        $valueBuf[] = $c;
+                        $pos++;
+                        $column++;
+                    }
                     break;
 
                 case self::STATE_VALUE_UNQUOTED:
-                    $this->handleValueUnquoted($c);
+                    if ($c === "\n" || $c === "\r") {
+                        // Trim trailing whitespace
+                        $val = rtrim(implode('', $valueBuf), " \t");
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = $val;
+                            $keyBuf = [];
+                        }
+                        $valueBuf = [];
+                        $state = self::STATE_LINE_START;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    } elseif ($c === '#') {
+                        // Check for inline comment
+                        $val = implode('', $valueBuf);
+                        if ($val !== '' && ($val[-1] === ' ' || $val[-1] === "\t")) {
+                            $val = rtrim($val, " \t");
+                            if ($keyBuf !== []) {
+                                $this->result[implode('', $keyBuf)] = $val;
+                                $keyBuf = [];
+                            }
+                            $valueBuf = [];
+                            $state = self::STATE_COMMENT;
+                            $pos++;
+                            $column++;
+                        } else {
+                            $valueBuf[] = $c;
+                            $pos++;
+                            $column++;
+                        }
+                    } else {
+                        $valueBuf[] = $c;
+                        $pos++;
+                        $column++;
+                    }
                     break;
 
                 case self::STATE_VALUE_SINGLE_QUOTED:
-                    $this->handleValueSingleQuoted($c);
+                    if ($c === "'") {
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = implode('', $valueBuf);
+                            $keyBuf = [];
+                        }
+                        $valueBuf = [];
+                        $state = self::STATE_LINE_END;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '\\' && $pos + 1 < $inputLen && $input[$pos + 1] === "'") {
+                        $valueBuf[] = "'";
+                        $pos += 2;
+                        $column += 2;
+                    } else {
+                        $valueBuf[] = $c;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    }
                     break;
 
                 case self::STATE_VALUE_DOUBLE_QUOTED:
-                    $this->handleValueDoubleQuoted($c);
+                    if ($c === '"') {
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = implode('', $valueBuf);
+                            $keyBuf = [];
+                        }
+                        $valueBuf = [];
+                        $state = self::STATE_LINE_END;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '\\' && $pos + 1 < $inputLen) {
+                        $pos++;
+                        $column++;
+                        $escaped = $input[$pos];
+                        $valueBuf[] = match ($escaped) {
+                            'n' => "\n",
+                            'r' => "\r",
+                            't' => "\t",
+                            '\\' => '\\',
+                            '"' => '"',
+                            "'" => "'",
+                            '$' => '$',
+                            '`' => '`',
+                            default => $escaped,
+                        };
+                        $pos++;
+                        $column++;
+                    } else {
+                        $valueBuf[] = $c;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    }
                     break;
 
                 case self::STATE_VALUE_BACKTICK:
-                    $this->handleValueBacktick($c);
+                    if ($c === '`') {
+                        if ($keyBuf !== []) {
+                            $this->result[implode('', $keyBuf)] = implode('', $valueBuf);
+                            $keyBuf = [];
+                        }
+                        $valueBuf = [];
+                        $state = self::STATE_LINE_END;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '\\' && $pos + 1 < $inputLen) {
+                        $pos++;
+                        $column++;
+                        $escaped = $input[$pos];
+                        $valueBuf[] = match ($escaped) {
+                            'n' => "\n",
+                            'r' => "\r",
+                            't' => "\t",
+                            '\\' => '\\',
+                            '"' => '"',
+                            "'" => "'",
+                            '$' => '$',
+                            '`' => '`',
+                            default => $escaped,
+                        };
+                        $pos++;
+                        $column++;
+                    } else {
+                        $valueBuf[] = $c;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    }
                     break;
 
                 case self::STATE_COMMENT:
-                    $this->handleComment($c);
+                    if ($c === "\n") {
+                        $state = self::STATE_LINE_START;
+                        $line++;
+                        $column = 1;
+                    } else {
+                        $column++;
+                    }
+                    $pos++;
                     break;
 
                 case self::STATE_LINE_END:
-                    $this->handleLineEnd($c);
+                    if ($c === ' ' || $c === "\t") {
+                        $pos++;
+                        $column++;
+                    } elseif ($c === '#') {
+                        $state = self::STATE_COMMENT;
+                        $pos++;
+                        $column++;
+                    } elseif ($c === "\n" || $c === "\r") {
+                        $state = self::STATE_LINE_START;
+                        if ($c === "\n") {
+                            $line++;
+                            $column = 1;
+                        } else {
+                            $column++;
+                        }
+                        $pos++;
+                    } else {
+                        throw DotenvException::parseError($line, $column, 'Unexpected character after quoted value');
+                    }
                     break;
-
-                default:
-                    throw DotenvException::parseError(
-                        $this->line,
-                        $this->column,
-                        'Internal parser error: invalid state'
-                    );
             }
         }
 
         // Handle end of input
-        $this->handleEndOfInput();
+        if ($state === self::STATE_KEY || $state === self::STATE_VALUE_UNQUOTED ||
+            $state === self::STATE_BEFORE_VALUE || $state === self::STATE_AFTER_KEY) {
+            if ($keyBuf !== []) {
+                $val = ($state === self::STATE_VALUE_UNQUOTED) ? implode('', $valueBuf) : '';
+                $this->result[implode('', $keyBuf)] = $val;
+            }
+        } elseif ($state === self::STATE_VALUE_SINGLE_QUOTED ||
+                  $state === self::STATE_VALUE_DOUBLE_QUOTED ||
+                  $state === self::STATE_VALUE_BACKTICK) {
+            throw DotenvException::parseError($line, $column, 'Unterminated quoted string at end of file');
+        }
 
         return $this->result;
-    }
-
-    private function peek(): string
-    {
-        if ($this->pos >= $this->inputLen) {
-            return "\0";
-        }
-        return $this->input[$this->pos];
-    }
-
-    private function advance(): void
-    {
-        if ($this->pos < $this->inputLen) {
-            $c = $this->input[$this->pos];
-            $this->pos++;
-            if ($c === "\n") {
-                $this->line++;
-                $this->column = 1;
-            } else {
-                $this->column++;
-            }
-        }
-    }
-
-    private function consume(): string
-    {
-        $c = $this->peek();
-        $this->advance();
-        return $c;
-    }
-
-    private function isKeyStartChar(string $c): bool
-    {
-        return ($c >= 'A' && $c <= 'Z') ||
-               ($c >= 'a' && $c <= 'z') ||
-               $c === '_';
-    }
-
-    private function isKeyChar(string $c): bool
-    {
-        return $this->isKeyStartChar($c) ||
-               ($c >= '0' && $c <= '9');
-    }
-
-    private function isWhitespace(string $c): bool
-    {
-        return $c === ' ' || $c === "\t";
-    }
-
-    private function isNewline(string $c): bool
-    {
-        return $c === "\n" || $c === "\r";
-    }
-
-    private function storeValue(): void
-    {
-        if ($this->currentKey === '') {
-            return;
-        }
-
-        $this->result[$this->currentKey] = $this->currentValue;
-        $this->currentKey = '';
-        $this->currentValue = '';
-    }
-
-    private function processEscape(): string
-    {
-        $c = $this->consume();
-        return match ($c) {
-            'n' => "\n",
-            'r' => "\r",
-            't' => "\t",
-            '\\' => '\\',
-            '"' => '"',
-            "'" => "'",
-            '$' => '$',
-            '`' => '`',
-            default => $c, // Unknown escape, keep as-is
-        };
-    }
-
-    private function handleLineStart(string $c): void
-    {
-        if ($this->isWhitespace($c)) {
-            $this->advance();
-        } elseif ($c === '#') {
-            $this->state = self::STATE_COMMENT;
-            $this->advance();
-        } elseif ($this->isNewline($c)) {
-            $this->advance();
-        } elseif ($this->isKeyStartChar($c)) {
-            $this->state = self::STATE_KEY;
-            $this->currentKey .= $c;
-            $this->advance();
-        } else {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                'Invalid character at start of line'
-            );
-        }
-    }
-
-    private function handleKey(string $c): void
-    {
-        if ($this->isKeyChar($c)) {
-            $this->currentKey .= $c;
-            $this->advance();
-        } elseif ($c === '=' || $this->isWhitespace($c)) {
-            $this->state = self::STATE_AFTER_KEY;
-        } elseif ($this->isNewline($c)) {
-            // Key without value
-            $this->storeValue();
-            $this->state = self::STATE_LINE_START;
-            $this->advance();
-        } else {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                'Invalid character in key name'
-            );
-        }
-    }
-
-    private function handleAfterKey(string $c): void
-    {
-        if ($this->isWhitespace($c)) {
-            $this->advance();
-        } elseif ($c === '=') {
-            $this->state = self::STATE_BEFORE_VALUE;
-            $this->advance();
-        } else {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                "Expected '=' after key"
-            );
-        }
-    }
-
-    private function handleBeforeValue(string $c): void
-    {
-        if ($this->isWhitespace($c)) {
-            $this->advance();
-        } elseif ($c === '"') {
-            $this->state = self::STATE_VALUE_DOUBLE_QUOTED;
-            $this->quoteChar = '"';
-            $this->advance();
-        } elseif ($c === "'") {
-            $this->state = self::STATE_VALUE_SINGLE_QUOTED;
-            $this->quoteChar = "'";
-            $this->advance();
-        } elseif ($c === '`') {
-            $this->state = self::STATE_VALUE_BACKTICK;
-            $this->quoteChar = '`';
-            $this->advance();
-        } elseif ($this->isNewline($c) || $c === "\0") {
-            // Empty value
-            $this->storeValue();
-            $this->state = self::STATE_LINE_START;
-            if ($c !== "\0") {
-                $this->advance();
-            }
-        } elseif ($c === '#') {
-            // Empty value with comment
-            $this->storeValue();
-            $this->state = self::STATE_COMMENT;
-            $this->advance();
-        } else {
-            $this->state = self::STATE_VALUE_UNQUOTED;
-            $this->currentValue .= $c;
-            $this->advance();
-        }
-    }
-
-    private function handleValueUnquoted(string $c): void
-    {
-        if ($this->isNewline($c) || $c === "\0") {
-            // Trim trailing whitespace from unquoted value
-            $this->currentValue = rtrim($this->currentValue, " \t");
-            $this->storeValue();
-            $this->state = self::STATE_LINE_START;
-            if ($c !== "\0") {
-                $this->advance();
-            }
-        } elseif ($c === '#') {
-            // Check for inline comment (preceded by whitespace)
-            if ($this->currentValue !== '' && $this->isWhitespace($this->currentValue[-1])) {
-                // Trim trailing whitespace and treat as comment
-                $this->currentValue = rtrim($this->currentValue, " \t");
-                $this->storeValue();
-                $this->state = self::STATE_COMMENT;
-                $this->advance();
-            } else {
-                // # not preceded by whitespace, part of value
-                $this->currentValue .= $c;
-                $this->advance();
-            }
-        } else {
-            $this->currentValue .= $c;
-            $this->advance();
-        }
-    }
-
-    private function handleValueSingleQuoted(string $c): void
-    {
-        if ($c === "'") {
-            $this->storeValue();
-            $this->state = self::STATE_LINE_END;
-            $this->advance();
-        } elseif ($c === '\\') {
-            // Check for escaped quote
-            if ($this->pos + 1 < $this->inputLen && $this->input[$this->pos + 1] === "'") {
-                $this->advance();
-                $this->currentValue .= "'";
-                $this->advance();
-            } else {
-                $this->currentValue .= $c;
-                $this->advance();
-            }
-        } elseif ($c === "\0") {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                'Unterminated single-quoted string'
-            );
-        } else {
-            $this->currentValue .= $c;
-            $this->advance();
-        }
-    }
-
-    private function handleValueDoubleQuoted(string $c): void
-    {
-        if ($c === '"') {
-            $this->storeValue();
-            $this->state = self::STATE_LINE_END;
-            $this->advance();
-        } elseif ($c === '\\') {
-            $this->advance();
-            if ($this->pos < $this->inputLen) {
-                $escaped = $this->processEscape();
-                $this->currentValue .= $escaped;
-            }
-        } elseif ($c === "\0") {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                'Unterminated double-quoted string'
-            );
-        } else {
-            $this->currentValue .= $c;
-            $this->advance();
-        }
-    }
-
-    private function handleValueBacktick(string $c): void
-    {
-        if ($c === '`') {
-            $this->storeValue();
-            $this->state = self::STATE_LINE_END;
-            $this->advance();
-        } elseif ($c === '\\') {
-            $this->advance();
-            if ($this->pos < $this->inputLen) {
-                $escaped = $this->processEscape();
-                $this->currentValue .= $escaped;
-            }
-        } elseif ($c === "\0") {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                'Unterminated backtick string'
-            );
-        } else {
-            $this->currentValue .= $c;
-            $this->advance();
-        }
-    }
-
-    private function handleComment(string $c): void
-    {
-        if ($this->isNewline($c)) {
-            $this->state = self::STATE_LINE_START;
-            $this->advance();
-        } else {
-            $this->advance();
-        }
-    }
-
-    private function handleLineEnd(string $c): void
-    {
-        if ($this->isWhitespace($c)) {
-            $this->advance();
-        } elseif ($c === '#') {
-            $this->state = self::STATE_COMMENT;
-            $this->advance();
-        } elseif ($this->isNewline($c) || $c === "\0") {
-            $this->state = self::STATE_LINE_START;
-            if ($c !== "\0") {
-                $this->advance();
-            }
-        } else {
-            throw DotenvException::parseError(
-                $this->line,
-                $this->column,
-                'Unexpected character after quoted value'
-            );
-        }
-    }
-
-    private function handleEndOfInput(): void
-    {
-        switch ($this->state) {
-            case self::STATE_KEY:
-            case self::STATE_VALUE_UNQUOTED:
-            case self::STATE_BEFORE_VALUE:
-            case self::STATE_AFTER_KEY:
-                $this->storeValue();
-                break;
-
-            case self::STATE_VALUE_SINGLE_QUOTED:
-            case self::STATE_VALUE_DOUBLE_QUOTED:
-            case self::STATE_VALUE_BACKTICK:
-                throw DotenvException::parseError(
-                    $this->line,
-                    $this->column,
-                    'Unterminated quoted string at end of file'
-                );
-        }
     }
 }
